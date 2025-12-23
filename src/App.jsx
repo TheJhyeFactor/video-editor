@@ -221,14 +221,130 @@ function App() {
     setShowExportPanel(false);
     setProcessing(true);
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    try {
+      const video = videoRef.current;
+      if (!video) return;
 
-    const a = document.createElement('a');
-    a.href = videoUrl;
-    a.download = `videoflow-${exportQuality}-${Date.now()}.${exportFormat}`;
-    a.click();
+      // Create canvas for recording
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
 
-    setProcessing(false);
+      // Calculate trim times
+      const startTime = (trimStart / 100) * duration;
+      const endTime = (trimEnd / 100) * duration;
+      const trimDuration = endTime - startTime;
+
+      // Set video to start position
+      video.currentTime = startTime;
+      await new Promise(resolve => {
+        video.onseeked = resolve;
+      });
+
+      // Setup MediaRecorder
+      const stream = canvas.captureStream(30); // 30 FPS
+
+      // Add audio from video if not muted
+      if (!isMuted && video.captureStream) {
+        const videoStream = video.captureStream();
+        const audioTracks = videoStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          stream.addTrack(audioTracks[0]);
+        }
+      }
+
+      const mimeType = exportFormat === 'webm' ? 'video/webm' : 'video/webm'; // Browser support
+      const recorder = new MediaRecorder(stream, {
+        mimeType: mimeType,
+        videoBitsPerSecond: exportQuality === 'ultra' ? 8000000 :
+                           exportQuality === 'high' ? 5000000 :
+                           exportQuality === 'medium' ? 2500000 : 1000000
+      });
+
+      const chunks = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `videoflow-edited-${Date.now()}.${exportFormat === 'webm' ? 'webm' : 'webm'}`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setProcessing(false);
+      };
+
+      // Start recording
+      recorder.start();
+      video.play();
+
+      // Draw video frames with effects
+      const drawFrame = () => {
+        if (video.currentTime >= endTime || video.paused || video.ended) {
+          recorder.stop();
+          video.pause();
+          video.currentTime = 0;
+          return;
+        }
+
+        // Clear canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Save context state
+        ctx.save();
+
+        // Apply transformations
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        if (rotation !== 0) ctx.rotate((rotation * Math.PI) / 180);
+        if (flipH) ctx.scale(-1, 1);
+        if (flipV) ctx.scale(1, -1);
+        const scale = zoom / 100;
+        ctx.scale(scale, scale);
+        ctx.translate(-canvas.width / 2, -canvas.height / 2);
+
+        // Apply CSS filters
+        ctx.filter = getVideoFilter();
+
+        // Draw video frame
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Reset filter for text
+        ctx.filter = 'none';
+
+        // Restore context
+        ctx.restore();
+
+        // Draw text overlays
+        textOverlays.forEach(overlay => {
+          if (video.currentTime >= overlay.startTime && video.currentTime <= overlay.endTime) {
+            ctx.font = `${overlay.fontWeight} ${overlay.fontSize * (canvas.width / video.offsetWidth)}px Arial`;
+            ctx.fillStyle = overlay.color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const x = (overlay.x / 100) * canvas.width;
+            const y = (overlay.y / 100) * canvas.height;
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            ctx.shadowBlur = 4;
+            ctx.fillText(overlay.text, x, y);
+          }
+        });
+
+        requestAnimationFrame(drawFrame);
+      };
+
+      drawFrame();
+
+    } catch (error) {
+      console.error('Export error:', error);
+      alert('Export failed. Your browser may not support video recording. Try using Chrome or Edge.');
+      setProcessing(false);
+    }
   };
 
   const skipBackward = () => {
@@ -694,6 +810,20 @@ function App() {
         </div>
       )}
 
+      {/* Processing Overlay */}
+      {processing && (
+        <div className="modal-overlay">
+          <div className="processing-modal">
+            <div className="spinner"></div>
+            <h3>Rendering Your Video...</h3>
+            <p>Applying all effects and text overlays</p>
+            <p style={{fontSize: '0.85rem', color: '#999', marginTop: '12px'}}>
+              This may take a few moments depending on video length
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Export Modal */}
       {showExportPanel && (
         <div className="modal-overlay" onClick={() => setShowExportPanel(false)}>
@@ -705,31 +835,38 @@ function App() {
             <div className="modal-content">
               <div className="export-options">
                 <label>
-                  Format
-                  <select value={exportFormat} onChange={(e) => setExportFormat(e.target.value)}>
-                    <option value="mp4">MP4</option>
-                    <option value="webm">WebM</option>
-                    <option value="mov">MOV</option>
-                  </select>
-                </label>
-                <label>
                   Quality
                   <select value={exportQuality} onChange={(e) => setExportQuality(e.target.value)}>
-                    <option value="low">Low (720p)</option>
-                    <option value="medium">Medium (1080p)</option>
-                    <option value="high">High (1440p)</option>
-                    <option value="ultra">Ultra (4K)</option>
+                    <option value="low">Low (1 Mbps)</option>
+                    <option value="medium">Medium (2.5 Mbps)</option>
+                    <option value="high">High (5 Mbps)</option>
+                    <option value="ultra">Ultra (8 Mbps)</option>
                   </select>
                 </label>
               </div>
               <div className="export-info">
                 <p><strong>Duration:</strong> {formatTime((trimEnd - trimStart) / 100 * duration)}</p>
-                <p><strong>Effects:</strong> {selectedEffect !== 'none' ? 'Applied' : 'None'}</p>
+                <p><strong>Format:</strong> WebM (browser recording)</p>
+                <p><strong>Effects Applied:</strong> {
+                  [
+                    selectedEffect !== 'none' && 'Visual Filter',
+                    brightness !== 100 && 'Brightness',
+                    contrast !== 100 && 'Contrast',
+                    saturation !== 100 && 'Saturation',
+                    rotation !== 0 && 'Rotation',
+                    flipH && 'Flip H',
+                    flipV && 'Flip V',
+                    zoom !== 100 && 'Zoom'
+                  ].filter(Boolean).join(', ') || 'None'
+                }</p>
                 <p><strong>Text Overlays:</strong> {textOverlays.length}</p>
+                <p style={{fontSize: '0.8rem', color: '#999', marginTop: '12px'}}>
+                  ⚠️ Export will re-encode your video with all effects applied. This may take time depending on video length.
+                </p>
               </div>
               <button onClick={handleExport} className="export-btn-large" disabled={processing}>
                 <Download size={20} />
-                {processing ? 'Processing...' : 'Export Now'}
+                {processing ? 'Rendering Video...' : 'Start Export'}
               </button>
             </div>
           </div>

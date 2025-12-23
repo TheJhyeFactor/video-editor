@@ -106,6 +106,8 @@ body {
   padding: 40px 20px;
   transition: all 0.3s;
   overflow-y: auto;
+  width: 100%;
+  min-height: 0;
 }
 
 .upload-area.drag-active {
@@ -121,6 +123,7 @@ body {
   max-width: 600px;
   width: 100%;
   transition: all 0.3s;
+  margin: 0 auto;
 }
 
 .upload-area.drag-active .upload-card {
